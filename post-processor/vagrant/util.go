@@ -137,6 +137,60 @@ func DirToBox(dst, dir string, ui packer.Ui, level int) error {
 	return filepath.Walk(dir, tarWalk)
 }
 
+func BoxToDir(dir, box string, ui packer.Ui) error {
+	log.Printf("Turning box into dir: %s => %s", box, dir)
+
+	// Make the output directory if it does not already exist
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
+		return err
+	}
+
+	boxFile, err := os.Open(box)
+	if err != nil {
+		return err
+	}
+	defer boxFile.Close()
+
+	var boxReader io.ReadCloser = boxFile
+	gzipReader, err := makePgzipReader(boxReader)
+	if err != nil {
+		return err
+	}
+	defer gzipReader.Close()
+	boxReader = gzipReader
+
+	tarReader := tar.NewReader(boxReader)
+
+	for header, err := tarReader.Next(); err == nil; header, err = tarReader.Next() {
+		switch header.Typeflag {
+		case tar.TypeDir:
+			err = os.Mkdir(filepath.Join(dir, header.Name), 0755)
+			if err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			unpackedFile, err := os.Create(filepath.Join(dir, header.Name))
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(unpackedFile, tarReader)
+			if err != nil {
+				return err
+			}
+			unpackedFile.Close()
+		default:
+			log.Printf("Unknown file type to unpack: %s at %s", string(header.Typeflag), header.Name)
+		}
+	}
+
+	if err != nil && err != io.EOF {
+		return err
+	}
+
+	return nil
+}
+
 // WriteMetadata writes the "metadata.json" file for a Vagrant box.
 func WriteMetadata(dir string, contents interface{}) error {
 	if _, err := os.Stat(filepath.Join(dir, "metadata.json")); os.IsNotExist(err) {
@@ -151,6 +205,14 @@ func WriteMetadata(dir string, contents interface{}) error {
 	}
 
 	return nil
+}
+
+func makePgzipReader(input io.ReadCloser) (io.ReadCloser, error) {
+	gzipReader, err := pgzip.NewReader(input)
+	if err != nil {
+		return nil, err
+	}
+	return gzipReader, nil
 }
 
 func makePgzipWriter(output io.WriteCloser, compressionLevel int) (io.WriteCloser, error) {
